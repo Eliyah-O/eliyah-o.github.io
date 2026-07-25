@@ -86,6 +86,17 @@
   .tag{display:inline-block;font-size:11px;padding:2px 7px;border-radius:99px;background:#eef1f5;color:var(--mut)}
   details{margin-top:10px} summary{cursor:pointer;font-size:13px;color:var(--mut)}
 
+  /* ВАЖНОЕ ПО ЗАПРОСУ: флаги из важное.json — видно с одного взгляда, что требует решения */
+  .vb{border:1px solid var(--line);border-radius:10px;padding:12px;margin:12px 0;background:#fff}
+  .vb h3{margin:0 0 4px;font-size:15px}
+  .vb .who{font-size:12px;color:var(--mut);margin-bottom:8px}
+  .vf{display:flex;gap:9px;align-items:flex-start;padding:8px 10px;border-radius:8px;margin-bottom:6px;font-size:13.5px;line-height:1.45}
+  .vf .ic{font-size:16px;line-height:1.2;flex:none}
+  .vf b{font-weight:600}
+  .vf.alert{background:#fdeceb;color:#7d1a12;border-left:4px solid var(--err)}
+  .vf.warn{background:#fdf3e0;color:#6b4c00;border-left:4px solid #d99100}
+  .vf.ok{background:#e7f5ec;color:#14532d;border-left:4px solid var(--ok)}
+  .vsum{font-size:13px;color:var(--mut);margin:2px 0 10px}
   .only-narrow{display:none}               /* показывается только на телефоне */
   /* ================= ТЕЛЕФОН (адаптация 25.07.2026) =================
      Цели: ничего не уезжает за край, поля и кнопки удобно нажимать пальцем,
@@ -132,7 +143,7 @@
   <img class="logo" src="icons/icon-192.png" alt="ВИТАПРОМ" width="192" height="192">
   <div class="hgroup">
     <h1>Расчет коммерческого предложения</h1>
-    <p><span style="opacity:.6">версия 6.4 (25.07.2026)</span></p>
+    <p><span style="opacity:.6">версия 6.5 (25.07.2026)</span></p>
   </div>
 </header>
 
@@ -253,6 +264,7 @@
       <span class="hint" id="resHint"></span>
     </div>
     <div id="resMsg" class="msg"></div>
+    <div id="важное"></div>
     <div style="overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:10px">
     <table id="resTable">
       <thead><tr><th>Файл</th><th style="width:90px">Размер</th><th style="width:110px"></th></tr></thead>
@@ -710,12 +722,44 @@ $('refresh').onclick = async () => {
       body.appendChild(tr);
     }
     $('resHint').textContent = `файлов: ${items.length}`;
+    await показатьВажное(items);
     msg('resMsg','Готово.','ok');
   }catch(e){
     body.innerHTML = '';
     msg('resMsg', e.message, 'err');
   }
 };
+/* Файлы «важное.json» кладёт Claude рядом с КП: краткие пояснения по рискам запроса
+   (наценка, наличие, закупка, соответствие). Рисуем их значками над списком файлов. */
+async function показатьВажное(items){
+  const box = $('важное'); box.innerHTML = '';
+  const флаговые = items.filter(i => i.rel.endsWith('важное.json'))
+                        .sort((a,b) => b.rel.localeCompare(a.rel,'ru'))
+                        .slice(0, 3);                    // последние три запроса
+  for(const it of флаговые){
+    let data;
+    try{
+      const r = await gh(`https://api.github.com/repos/${cfg.owner}/${cfg.repo}/git/blobs/${it.sha}`);
+      const j = await r.json();
+      const bytes = Uint8Array.from(atob(j.content.replace(/\n/g,'')), c => c.charCodeAt(0));
+      data = JSON.parse(new TextDecoder('utf-8').decode(bytes));
+    }catch(e){ continue; }
+    const dir = it.rel.slice(0, it.rel.lastIndexOf('/'));
+    const флаги = data.флаги || [];
+    const n = k => флаги.filter(f => f.уровень === k).length;
+    const div = document.createElement('div');
+    div.className = 'vb';
+    div.innerHTML =
+      `<h3>Важное по запросу</h3>` +
+      `<div class="who">${data.клиент ? data.клиент + ' · ' : ''}${dir}${data.составлено ? ' · ' + data.составлено : ''}</div>` +
+      `<div class="vsum">🔴 требует решения: ${n('alert')} &nbsp;·&nbsp; 🟡 обратить внимание: ${n('warn')} &nbsp;·&nbsp; 🟢 в норме: ${n('ok')}</div>` +
+      флаги.map(f =>
+        `<div class="vf ${f.уровень}"><span class="ic">${f.уровень==='alert'?'🔴':f.уровень==='warn'?'🟡':'🟢'}</span>` +
+        `<span><b>${f.тема}.</b> ${f.текст}</span></div>`).join('');
+    box.appendChild(div);
+  }
+}
+
 async function download(item, name){
   try{
     // приватный репозиторий: качаем через API по sha (работает и для больших файлов)
