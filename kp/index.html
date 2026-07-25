@@ -97,6 +97,14 @@
   .vf.warn{background:#fdf3e0;color:#6b4c00;border-left:4px solid #d99100}
   .vf.ok{background:#e7f5ec;color:#14532d;border-left:4px solid var(--ok)}
   .vsum{font-size:13px;color:var(--mut);margin:2px 0 10px}
+  /* Сигнал «предложение готово»: страница сама следит за папкой results/ и зажигает
+     этот баннер, чтобы менеджер не жал кнопку вслепую (25.07.2026). */
+  #готово{margin:12px 0;padding:14px 16px;border-radius:10px;background:#e7f5ec;color:#14532d;
+          border:1px solid #b7e0c5;border-left:5px solid var(--ok);font-size:14.5px;line-height:1.5}
+  #готово b{font-size:16px}
+  #готово.ждём{background:#eef1f5;color:var(--mut);border-color:var(--line);border-left-color:#9aa5b1}
+  @keyframes мигание{0%,100%{box-shadow:0 0 0 0 rgba(30,122,69,.35)}50%{box-shadow:0 0 0 7px rgba(30,122,69,0)}}
+  #готово.новое{animation:мигание 1.6s ease-out 3}
   .only-narrow{display:none}               /* показывается только на телефоне */
   /* ================= ТЕЛЕФОН (адаптация 25.07.2026) =================
      Цели: ничего не уезжает за край, поля и кнопки удобно нажимать пальцем,
@@ -143,7 +151,7 @@
   <img class="logo" src="icons/icon-192.png" alt="ВИТАПРОМ" width="192" height="192">
   <div class="hgroup">
     <h1>Расчет коммерческого предложения</h1>
-    <p><span style="opacity:.6">версия 6.5 (25.07.2026)</span></p>
+    <p><span style="opacity:.6">версия 6.6 (25.07.2026)</span></p>
   </div>
 </header>
 
@@ -264,6 +272,7 @@
       <span class="hint" id="resHint"></span>
     </div>
     <div id="resMsg" class="msg"></div>
+    <div id="готово" style="display:none"></div>
     <div id="важное"></div>
     <div style="overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:10px">
     <table id="resTable">
@@ -676,18 +685,76 @@ $('send').onclick = async () => {
     let n = 0;
     if(payload){ await putFile(`${dir}/задание.txt`, textB64(payload), 'Задание: ' + (isCall?'звонок':'текст')); n++; }
     for(const f of queue){ await putFile(`${dir}/${safe(f.name)}`, await b64(f), 'Задание: ' + f.name); n++; }
-    msg('sendMsg', `Отправлено (${n} файл(ов)) в ${dir}. Claude заберёт задание при следующей проверке.`, 'ok');
+    msg('sendMsg', `Отправлено (${n} файл(ов)) в ${dir}.`, 'ok');
+    начатьОжидание();
     $('text').value = ''; queue = []; renderFiles();
     if(isCall){ ['cName','cCompany','cPhone','cEmail','cOurPhone'].forEach(id => $(id).value=''); $('cReply').value=''; $('cSite').value=''; $('phoneHint').textContent=''; }
   }catch(e){ msg('sendMsg', e.message, 'err'); }
   $('send').disabled = false;
 };
 
+/* ---------- сигнал «предложение готово» ----------
+   После отправки задания страница раз в 45 с спрашивает у GitHub дату последнего
+   изменения папки results/. Стало новее момента отправки → предложение готово:
+   зелёный баннер + уведомление браузера + метка в заголовке вкладки.
+   Работает, пока вкладка открыта; состояние переживает перезагрузку (localStorage). */
+const ЖДЁМ='vp_waiting', ВИДЕЛ='vp_seen_results';
+let таймерОпроса = null, опросовОсталось = 0;
+
+async function датаРезультатов(){
+  try{
+    const r = await gh(`https://api.github.com/repos/${cfg.owner}/${cfg.repo}` +
+                       `/commits?path=${RESULTS}&per_page=1`);
+    if(!r) return null;
+    const j = await r.json();
+    return j[0]?.commit?.committer?.date || null;
+  }catch(e){ return null; }
+}
+function показатьЖдём(){
+  const b = $('готово');
+  b.className = 'ждём'; b.style.display = 'block';
+  b.innerHTML = 'Задание отправлено, запрос обрабатывается в отделе продаж. ' +
+                'Как только предложение будет готово, здесь появится сигнал — страницу можно не закрывать.';
+}
+function показатьГотово(){
+  const b = $('готово');
+  b.className = 'новое'; b.style.display = 'block';
+  b.innerHTML = '<b>✅ Предложение готово!</b><br>Нажмите «Получить предложение» — файлы уже в списке.';
+  document.title = '● Предложение готово';
+  try{
+    if(window.Notification && Notification.permission === 'granted')
+      new Notification('ВИТАПРОМ: предложение готово', {body:'Откройте страницу и нажмите «Получить предложение».'});
+  }catch(e){}
+}
+async function проверитьГотовность(){
+  const ждём = localStorage.getItem(ЖДЁМ);
+  if(!ждём) return;
+  const d = await датаРезультатов();
+  if(d && new Date(d) > new Date(ждём)){
+    localStorage.removeItem(ЖДЁМ);
+    clearInterval(таймерОпроса); таймерОпроса = null;
+    показатьГотово();
+  }else if(опросовОсталось-- <= 0){          // не опрашивать вечно (≈2 часа)
+    clearInterval(таймерОпроса); таймерОпроса = null;
+  }
+}
+function начатьОжидание(){
+  localStorage.setItem(ЖДЁМ, new Date().toISOString());
+  показатьЖдём();
+  опросовОсталось = 160;
+  clearInterval(таймерОпроса);
+  таймерОпроса = setInterval(проверитьГотовность, 45000);
+  try{ if(window.Notification && Notification.permission === 'default') Notification.requestPermission(); }catch(e){}
+}
+
 /* ---------- результаты ---------- */
 /* Результаты лежат в подпапках вида results/ГГММДДNNN_кто/ — поэтому смотрим
    всё дерево рекурсивно, а не только верхний уровень (иначе файлов не видно). */
 $('refresh').onclick = async () => {
   msg('resMsg','Загружаю…','info');
+  $('готово').style.display = 'none'; document.title = 'Расчет коммерческого предложения';
+  localStorage.removeItem(ЖДЁМ);
+  датаРезультатов().then(d => d && localStorage.setItem(ВИДЕЛ, d));
   const body = $('resBody'); body.innerHTML = '';
   try{
     const r = await gh(`https://api.github.com/repos/${cfg.owner}/${cfg.repo}` +
@@ -774,6 +841,21 @@ async function download(item, name){
 }
 
 loadCfg();
+/* Страницу открыли заново: если ждали результат — продолжить ожидание; если он уже
+   появился, пока вкладка была закрыта, — сразу показать сигнал. */
+(async function приЗапуске(){
+  if(!cfg.owner || !cfg.repo || !cfg.token) return;
+  const ждём = localStorage.getItem(ЖДЁМ);
+  if(ждём){
+    показатьЖдём();
+    опросовОсталось = 160;
+    таймерОпроса = setInterval(проверитьГотовность, 45000);
+    проверитьГотовность();
+    return;
+  }
+  const d = await датаРезультатов(), видел = localStorage.getItem(ВИДЕЛ);
+  if(d && видел && new Date(d) > new Date(видел)) показатьГотово();
+})();
 </script>
 </body>
 </html>
